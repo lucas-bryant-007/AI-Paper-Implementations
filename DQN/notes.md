@@ -1,7 +1,8 @@
 # DQN Implementation Notes
 
-## Algorithm 1 (Deep Q-learning with Experience Replay)
+In the paper, input was 84x84 grayscale pixels with 4 frames stacked together
 
+## Algorithm 1 (Deep Q-learning with Experience Replay)
 $$
 \begin{aligned}
 &\textbf{Initialize replay memory } \mathcal{D} \text{ to capacity } \mathcal{N}.\\
