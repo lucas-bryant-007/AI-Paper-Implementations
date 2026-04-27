@@ -1,159 +1,161 @@
 # agent.py
 # contains update logic, loss function, action selection
 
-import numpy as np
+from pathlib import Path
+from typing import List, Tuple
+ 
+import gymnasium as gym
 import torch
-
-import buffer
-
-
-class ppo_agent():
-    def __init__(self, env, actor, critic, optim, gamma, k_epochs, epsilon, gae_param, device):
+import torch.nn.functional as F
+ 
+from buffer import RolloutBuffer
+from config import PPOConfig
+from model import Actor, Critic
+ 
+ 
+class PPOAgent:
+    def __init__(
+        self,
+        env: gym.Env,
+        actor: Actor,
+        critic: Critic,
+        optimizer: torch.optim.Optimizer,
+        config: PPOConfig,
+        device: torch.device,
+    ):
         self.env = env
         self.actor = actor
         self.critic = critic
-        self.optim = optim
-        self.gamma = gamma
-        self.k_epochs = k_epochs
-        self.epsilon = epsilon
-        self.gae_param = gae_param
+        self.optimizer = optimizer
+        self.cfg = config
         self.device = device
-
-        self.actor.to(self.device)
-        self.critic.to(self.device)
-
-
-    def select_action(self, state, buffer: buffer.rollout_buffer):
-        state = torch.tensor(state, dtype=torch.float).to(self.device).unsqueeze(0)
-
-        with torch.no_grad():
-            action, log_prob = self.actor.forward(state)
-            value = self.critic.forward(state)
-
-        action_item = action.item()
-        log_prob_det = log_prob.detach()
-
-        next_state, reward, terminated, trunc, _ = self.env.step(action_item)
-        done = terminated or trunc
-
-        next_state_tensor = torch.tensor(next_state, dtype=torch.float).to(self.device).unsqueeze(0)
-        with torch.no_grad():
-            next_state_value = self.critic.forward(next_state_tensor)
-
-        buffer.states.append(state.detach().cpu())
-        buffer.actions.append(action_item)
-        buffer.log_probs.append(log_prob_det.cpu())
-        buffer.rewards.append(reward)
-        buffer.state_values.append(value.detach().cpu().squeeze())
-        buffer.next_state_values.append(next_state_value.detach().cpu().squeeze())        
-        buffer.dones.append(done)
-
-        return next_state, done
-
-    def compute_returns(self, buffer: buffer.rollout_buffer):
-        returns = []
-        discounted_reward = 0
-
-        for reward, done in zip(reversed(buffer.rewards), reversed(buffer.dones)):
-            if done:
-                discounted_reward = 0
-            
-            discounted_reward *= self.gamma
-            discounted_reward += reward
-
-            returns.append(discounted_reward)
-        
-        return returns[::-1]
-    
-    def compute_advantage(self, buffer: buffer.rollout_buffer):
-        returns = torch.tensor(self.compute_returns(buffer)).to(self.device)
-        values = torch.stack(buffer.state_values).to(self.device)
-        
-        advantages = torch.subtract(returns, values)
-        
-        advantages_std, advantages_mean = torch.std_mean(advantages)
-
-        advantages_norm = (advantages - advantages_mean)/(advantages_std + 1e-8)
-
-        return advantages_norm
-
-    def compute_advantage_gae(self, buffer: buffer.rollout_buffer):
-        rewards = torch.tensor(buffer.rewards, dtype=torch.float32).to(self.device)
-        values = torch.stack(buffer.state_values).to(self.device)
-        values_next = torch.stack(buffer.next_state_values).to(self.device)
-        not_done = 1.0 - torch.tensor(buffer.dones, dtype=torch.float32).to(self.device)
-        deltas = rewards + self.gamma*values_next*not_done - values
-
-        advantages = []
-        discounted_return = 0
-
-        for delta, done in zip(reversed(deltas), reversed(buffer.dones)):
-            if done:
-                discounted_return = 0
-            
-            
-            discounted_return = delta + self.gamma * self.gae_param * discounted_return
-            advantages.append(discounted_return)
-        
-        raw_gae_advantages = torch.stack(advantages[::-1])
-
-                
-        advantages_std, advantages_mean = torch.std_mean(raw_gae_advantages)
-
-        gae_advantages_norm = (raw_gae_advantages - advantages_mean)/(advantages_std + 1e-8)
-
-        return raw_gae_advantages, gae_advantages_norm
-
-    def update(self, buffer: buffer.rollout_buffer):
-
-        # 1. Precalculate targets and advantages once
-        raw_advantages, advantages = self.compute_advantage_gae(buffer)
-        advantages = advantages.detach()
-
-        old_states = torch.cat(buffer.states).to(self.device)
-        old_actions = torch.tensor(buffer.actions, dtype=torch.long).to(self.device)
-        old_log_probs = torch.cat(buffer.log_probs).detach().to(self.device).squeeze(-1)
-        
-        values = torch.stack(buffer.state_values).to(self.device).detach()
-        returns = (raw_advantages + values).detach()
-        
-        for epoch in range(self.k_epochs):
-            
-            log_probs, dist_entropy = self.actor.get_probs(old_states, old_actions)
-            log_probs = log_probs.squeeze(-1)
-            state_values = self.critic(old_states).squeeze(-1)
-
-            ratio = torch.exp(log_probs - old_log_probs)
-            surr1 = ratio * advantages
-            surr2 = torch.clamp(ratio, 1-self.epsilon, 1+self.epsilon) * advantages
-
-            policy_loss = -torch.min(surr1, surr2).mean()
-            value_loss = torch.nn.functional.mse_loss(state_values, returns)
-            entropy_loss = dist_entropy.mean()
-            
-            self.optim.zero_grad()
-            loss = policy_loss + 0.5 * value_loss - 0.01 * entropy_loss
-            loss.backward()
-            self.optim.step()
-
+ 
+    # --- Rollout collection --------------------------------------------------
+ 
+    @torch.no_grad()
+    def _step_policy(self, state_t: torch.Tensor) -> Tuple[int, torch.Tensor, torch.Tensor]:
+        """Sample an action and compute its log-prob and value (no grad)."""
+        dist = self.actor(state_t)
+        action = dist.sample()
+        return action.item(), dist.log_prob(action), self.critic(state_t)
+ 
+    def collect_rollout(self, buffer: RolloutBuffer) -> List[float]:
+        """Roll out `cfg.rollout_length` steps. Returns finished-episode returns."""
         buffer.clear()
-
-    def run_for_T_timesteps(self, buffer, T):
-        state, info = self.env.reset()
-
-        episode_reward = 0
-        completed_episode_rewards = []
-
-        for timestep in range(T):
-            state, done = self.select_action(state, buffer)
-            
-            episode_reward += buffer.rewards[-1]
-            
+        episode_returns: List[float] = []
+        ep_return = 0.0
+ 
+        state, _ = self.env.reset()
+        for _ in range(self.cfg.rollout_length):
+            state_t = torch.as_tensor(state, dtype=torch.float32, device=self.device)
+            action, log_prob, value = self._step_policy(state_t.unsqueeze(0))
+ 
+            next_state, reward, terminated, truncated, _ = self.env.step(action)
+            done = terminated or truncated
+ 
+            buffer.add(
+                state=state_t.cpu(),
+                action=action,
+                log_prob=log_prob.cpu().squeeze(),
+                reward=float(reward),
+                value=value.cpu().squeeze(),
+                done=done,
+            )
+ 
+            ep_return += reward
             if done:
-                completed_episode_rewards.append(episode_reward)
-                episode_reward = 0
-
-                state, info = self.env.reset()
-
-        return completed_episode_rewards
-        
+                episode_returns.append(ep_return)
+                ep_return = 0.0
+                state, _ = self.env.reset()
+            else:
+                state = next_state
+ 
+        # Bootstrap value at the end of the rollout (only this once per rollout).
+        with torch.no_grad():
+            last_t = torch.as_tensor(state, dtype=torch.float32, device=self.device)
+            buffer.last_value = float(self.critic(last_t.unsqueeze(0)).item())
+        return episode_returns
+ 
+    # --- Advantage estimation ------------------------------------------------
+ 
+    def _compute_gae(self, buffer: RolloutBuffer) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Generalized Advantage Estimation. Returns (advantages, returns)."""
+        rewards = torch.tensor(buffer.rewards, dtype=torch.float32)
+        values = torch.stack(buffer.values).float()
+        dones = torch.tensor(buffer.dones, dtype=torch.float32)
+        masks = 1.0 - dones  # 0 wherever an episode ended at step t
+ 
+        # next_values[t] = V(s_{t+1}); the last next-value is the bootstrap.
+        next_values = torch.cat([values[1:], torch.tensor([buffer.last_value])])
+        deltas = rewards + self.cfg.gamma * next_values * masks - values
+ 
+        advantages = torch.zeros_like(rewards)
+        gae = 0.0
+        for t in reversed(range(len(buffer))):
+            gae = deltas[t] + self.cfg.gamma * self.cfg.gae_lambda * masks[t] * gae
+            advantages[t] = gae
+ 
+        returns = advantages + values
+        return advantages.to(self.device), returns.to(self.device)
+ 
+    # --- Update --------------------------------------------------------------
+ 
+    def update(self, buffer: RolloutBuffer) -> None:
+        advantages, returns = self._compute_gae(buffer)
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+ 
+        states = torch.stack(buffer.states).to(self.device)
+        actions = torch.tensor(buffer.actions, dtype=torch.long, device=self.device)
+        old_log_probs = torch.stack(buffer.log_probs).to(self.device)
+ 
+        params = list(self.actor.parameters()) + list(self.critic.parameters())
+ 
+        for _ in range(self.cfg.k_epochs):
+            dist = self.actor(states)
+            new_log_probs = dist.log_prob(actions)
+            entropy = dist.entropy().mean()
+ 
+            ratio = torch.exp(new_log_probs - old_log_probs)
+            surr1 = ratio * advantages
+            surr2 = torch.clamp(ratio, 1 - self.cfg.clip_eps, 1 + self.cfg.clip_eps) * advantages
+            policy_loss = -torch.min(surr1, surr2).mean()
+            value_loss = F.mse_loss(self.critic(states), returns)
+ 
+            loss = (
+                policy_loss
+                + self.cfg.value_coef * value_loss
+                - self.cfg.entropy_coef * entropy
+            )
+ 
+            self.optimizer.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(params, self.cfg.max_grad_norm)
+            self.optimizer.step()
+ 
+    # --- Inference -----------------------------------------------------------
+ 
+    @torch.no_grad()
+    def act(self, state) -> int:
+        """Sample one action from the current policy (used at eval time)."""
+        state_t = torch.as_tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
+        return int(self.actor(state_t).sample().item())
+ 
+    # --- Persistence ---------------------------------------------------------
+ 
+    def save(self, save_dir: Path) -> None:
+        save_dir = Path(save_dir)
+        save_dir.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {
+                "actor": self.actor.state_dict(),
+                "critic": self.critic.state_dict(),
+                "optimizer": self.optimizer.state_dict(),
+            },
+            save_dir / "ppo_checkpoint.pt",
+        )
+ 
+    def load(self, save_dir: Path) -> None:
+        ckpt = torch.load(Path(save_dir) / "ppo_checkpoint.pt", map_location=self.device)
+        self.actor.load_state_dict(ckpt["actor"])
+        self.critic.load_state_dict(ckpt["critic"])
+        self.optimizer.load_state_dict(ckpt["optimizer"])

@@ -1,97 +1,127 @@
 # main.py
 # entry point, initialize gym, run train loop
 
+
+import argparse
 import csv
-import random
-from pathlib import Path
+from typing import Dict, List
 
 import gymnasium as gym
-import numpy as np
 import torch
 
-import agent
-import buffer
-import model
+from agent import PPOAgent
+from buffer import RolloutBuffer
+from config import PPOConfig
+from model import Actor, Critic
 
 
-### WARNING: PPO CURRENTLY ONLY WORKS FOR DISCRETE ACTION SPACE
-# TODO: add support for continuous action space, multiple input sizes/shapes, multiple output action shapes
-
-def run_ppo(run_name, lr):
-    print(f"running PPO on Acrobot | run={run_name} | lr={lr}")
-
-    env = gym.make('Acrobot-v1')
-
-    env.reset()
+def _pick_device() -> torch.device:
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-    T = 2048
-    num_iterations = 100
-    gamma = 0.99
-    k_epochs = 10
-    eps = 0.2
-    gae_param = 0.95
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device: {device}")
-
-    buffer_ = buffer.rollout_buffer()
-
-    actor = model.actor(env).to(device)
-    critic = model.critic(env).to(device)
-
+def _build_agent(env: gym.Env, cfg: PPOConfig, device: torch.device) -> PPOAgent:
+    """Construct actor, critic, optimizer, and agent. Shared by train and eval."""
+    actor = Actor(env).to(device)
+    critic = Critic(env).to(device)
     optimizer = torch.optim.Adam(
-        list(actor.parameters()) + list(critic.parameters()),
-        lr=lr
+        list(actor.parameters()) + list(critic.parameters()), lr=cfg.lr
     )
+    return PPOAgent(env, actor, critic, optimizer, cfg, device)
 
-    ppo_agent = agent.ppo_agent(
-        env,
-        actor,
-        critic,
-        optimizer,
-        gamma=gamma,
-        k_epochs=k_epochs,
-        epsilon=eps,
-        gae_param=gae_param,
-        device=device
-    )
 
-    rows = []
+def _write_log(log: List[Dict], cfg: PPOConfig) -> None:
+    if not log:
+        return
+    cfg.log_path.parent.mkdir(parents=True, exist_ok=True)
+    with cfg.log_path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=log[0].keys())
+        writer.writeheader()
+        writer.writerows(log)
+    print(f"[train] wrote training log to {cfg.log_path}")
 
-    for iteration in range(num_iterations):
 
-        episode_rewards = ppo_agent.run_for_T_timesteps(buffer_, T)
-        ppo_agent.update(buffer_)
+def train(cfg: PPOConfig, run_name: str = "vanilla_ppo") -> List[Dict]:
+    device = _pick_device()
+    print(f"[train] env={cfg.env_id}  device={device}  iters={cfg.num_iterations}  lr={cfg.lr}")
 
-        if len(episode_rewards) > 0:
-            avg_reward = sum(episode_rewards) / len(episode_rewards)
-        else:
-            avg_reward = float("nan")
+    env = gym.make(cfg.env_id)
+    agent = _build_agent(env, cfg, device)
+    buffer = RolloutBuffer()
 
-        row = {
+    log: List[Dict] = []
+    for it in range(cfg.num_iterations):
+        episode_returns = agent.collect_rollout(buffer)
+        agent.update(buffer)
+
+        avg_return = (
+            sum(episode_returns) / len(episode_returns)
+            if episode_returns else float("nan")
+        )
+        log.append({
             "run_name": run_name,
-            "lr": lr,
-            "iteration": iteration,
-            "avg_reward": avg_reward,
-            "num_episodes": len(episode_rewards),
-            "T": T,
-            "gamma": gamma,
-            "k_epochs": k_epochs,
-            "epsilon": eps,
-        }
+            "iteration": it,
+            "avg_return": avg_return,
+            "num_episodes": len(episode_returns),
+            "lr": cfg.lr,
+        })
 
-        rows.append(row)
-
-        if iteration % 10 == 0:
+        if it % 10 == 0 or it == cfg.num_iterations - 1:
             print(
-                f"Run {run_name} | Iteration {iteration} "
-                f"| Avg reward: {avg_reward:.2f} | Episodes: {len(episode_rewards)}"
+                f"[train] iter {it:3d} | "
+                f"avg_return {avg_return:7.2f} | "
+                f"episodes {len(episode_returns)}"
             )
 
+    agent.save(cfg.save_dir)
+    print(f"[train] saved checkpoint to {cfg.save_dir}")
+    _write_log(log, cfg)
+
     env.close()
-    return rows
+    return log
+
+
+def evaluate(cfg: PPOConfig, render: bool = True) -> None:
+    device = _pick_device()
+    env = gym.make(cfg.env_id, render_mode="human" if render else None)
+    agent = _build_agent(env, cfg, device)
+    agent.load(cfg.save_dir)
+    print(f"[eval] loaded checkpoint from {cfg.save_dir}")
+
+    for game in range(cfg.num_eval_games):
+        state, _ = env.reset()
+        ep_return, done = 0.0, False
+        while not done:
+            action = agent.act(state)
+            state, reward, terminated, truncated, _ = env.step(action)
+            ep_return += reward
+            done = terminated or truncated
+        print(f"[eval] game {game + 1}/{cfg.num_eval_games}  return {ep_return:.2f}")
+
+    env.close()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="PPO on a Gymnasium env.")
+    parser.add_argument(
+        "mode", choices=["train", "eval", "both"], nargs="?", default="both",
+        help="What to run (default: both).",
+    )
+    parser.add_argument("--run-name", default="vanilla_ppo")
+    parser.add_argument("--env", default=None, help="Override env_id.")
+    parser.add_argument("--lr", type=float, default=None, help="Override learning rate.")
+    args = parser.parse_args()
+
+    cfg = PPOConfig()
+    if args.env is not None:
+        cfg.env_id = args.env
+    if args.lr is not None:
+        cfg.lr = args.lr
+
+    if args.mode in ("train", "both"):
+        train(cfg, run_name=args.run_name)
+    if args.mode in ("eval", "both"):
+        evaluate(cfg)
+
 
 if __name__ == "__main__":
-
-        run_ppo(run_name="vanilla_ppo", lr=3e-4)
+    main()
