@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+.venv-ai/
+venv/
+env/
+
+# Training outputs / experiment artifacts
+DQN/runs/
+PPO/results/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/

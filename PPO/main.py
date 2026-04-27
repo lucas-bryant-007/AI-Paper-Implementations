@@ -14,26 +14,16 @@ import buffer
 import model
 
 
-def set_seed(seed):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
+### WARNING: PPO CURRENTLY ONLY WORKS FOR DISCRETE ACTION SPACE
+# TODO: add support for continuous action space, multiple input sizes/shapes, multiple output action shapes
 
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
+def run_ppo(run_name, lr):
+    print(f"running PPO on Acrobot | run={run_name} | lr={lr}")
 
+    env = gym.make('Acrobot-v1')
 
-def run_ppo(run_name, lr, seed=None):
-    print(f"running PPO on CartPole | run={run_name} | lr={lr} | seed={seed}")
+    env.reset()
 
-    set_seed(seed)
-
-    env = gym.make("CartPole-v1")
-
-    if seed is not None:
-        env.reset(seed=seed)
-        env.action_space.seed(seed)
-        env.observation_space.seed(seed)
 
     T = 2048
     num_iterations = 100
@@ -68,6 +58,7 @@ def run_ppo(run_name, lr, seed=None):
     rows = []
 
     for iteration in range(num_iterations):
+
         episode_rewards = ppo_agent.run_for_T_timesteps(buffer_, T)
         ppo_agent.update(buffer_)
 
@@ -79,7 +70,6 @@ def run_ppo(run_name, lr, seed=None):
         row = {
             "run_name": run_name,
             "lr": lr,
-            "seed": seed,
             "iteration": iteration,
             "avg_reward": avg_reward,
             "num_episodes": len(episode_rewards),
@@ -93,56 +83,13 @@ def run_ppo(run_name, lr, seed=None):
 
         if iteration % 10 == 0:
             print(
-                f"Run {run_name} | Seed {seed} | Iteration {iteration} "
+                f"Run {run_name} | Iteration {iteration} "
                 f"| Avg reward: {avg_reward:.2f} | Episodes: {len(episode_rewards)}"
             )
 
     env.close()
     return rows
 
-
-def save_results_csv(rows, path, append=False):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    fieldnames = [
-        "run_name",
-        "lr",
-        "seed",
-        "iteration",
-        "avg_reward",
-        "num_episodes",
-        "T",
-        "gamma",
-        "k_epochs",
-        "epsilon",
-    ]
-
-    file_exists = path.exists() and path.stat().st_size > 0
-    mode = "a" if append else "w"
-
-    with path.open(mode, newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-
-        if not append or not file_exists:
-            writer.writeheader()
-
-        writer.writerows(rows)
-
-    print(f"Saved results to {path}")
-
 if __name__ == "__main__":
-    seeds_per_run = 10
-    start_at_seed = 10
 
-    all_rows = []
-
-    for seed in range(start_at_seed, start_at_seed + seeds_per_run):
-        all_rows.extend(run_ppo(run_name="vanilla", lr=3e-4, seed=seed))
-        all_rows.extend(run_ppo(run_name="increased_lr", lr=6e-4, seed=seed))
-
-    save_results_csv(
-        all_rows,
-        "results/ppo_cartpole_results.csv",
-        append=True
-    )
+        run_ppo(run_name="vanilla_ppo", lr=3e-4)
