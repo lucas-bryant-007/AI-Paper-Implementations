@@ -8,7 +8,7 @@ import buffer
 
 
 class ppo_agent():
-    def __init__(self, env, actor, critic, optim, gamma, k_epochs, epsilon, device):
+    def __init__(self, env, actor, critic, optim, gamma, k_epochs, epsilon, gae_param, device):
         self.env = env
         self.actor = actor
         self.critic = critic
@@ -16,6 +16,7 @@ class ppo_agent():
         self.gamma = gamma
         self.k_epochs = k_epochs
         self.epsilon = epsilon
+        self.gae_param = gae_param
         self.device = device
 
         self.actor.to(self.device)
