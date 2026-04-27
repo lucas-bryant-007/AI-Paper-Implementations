@@ -30,6 +30,7 @@ def run_ppo(run_name, lr):
     gamma = 0.99
     k_epochs = 10
     eps = 0.2
+    gae_param = 0.95
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
@@ -52,6 +53,7 @@ def run_ppo(run_name, lr):
         gamma=gamma,
         k_epochs=k_epochs,
         epsilon=eps,
+        gae_param=gae_param,
         device=device
     )
 
