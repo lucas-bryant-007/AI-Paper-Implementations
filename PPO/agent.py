@@ -36,11 +36,16 @@ class ppo_agent():
         next_state, reward, terminated, trunc, _ = self.env.step(action_item)
         done = terminated or trunc
 
+        next_state_tensor = torch.tensor(next_state, dtype=torch.float).to(self.device).unsqueeze(0)
+        with torch.no_grad():
+            next_state_value = self.critic.forward(next_state_tensor)
+
         buffer.states.append(state.detach().cpu())
         buffer.actions.append(action_item)
         buffer.log_probs.append(log_prob_det.cpu())
         buffer.rewards.append(reward)
         buffer.state_values.append(value.detach().cpu().squeeze())
+        buffer.next_state_values.append(next_state_value.detach().cpu().squeeze())        
         buffer.dones.append(done)
 
         return next_state, done
@@ -64,25 +69,54 @@ class ppo_agent():
         returns = torch.tensor(self.compute_returns(buffer)).to(self.device)
         values = torch.stack(buffer.state_values).to(self.device)
         
-
         advantages = torch.subtract(returns, values)
         
         advantages_std, advantages_mean = torch.std_mean(advantages)
 
         advantages_norm = (advantages - advantages_mean)/(advantages_std + 1e-8)
 
-
         return advantages_norm
+
+    def compute_advantage_gae(self, buffer: buffer.rollout_buffer):
+        rewards = torch.tensor(buffer.rewards, dtype=torch.float32).to(self.device)
+        values = torch.stack(buffer.state_values).to(self.device)
+        values_next = torch.stack(buffer.next_state_values).to(self.device)
+        not_done = 1.0 - torch.tensor(buffer.dones, dtype=torch.float32).to(self.device)
+        deltas = rewards + self.gamma*values_next*not_done - values
+
+        advantages = []
+        discounted_return = 0
+
+        for delta, done in zip(reversed(deltas), reversed(buffer.dones)):
+            if done:
+                discounted_return = 0
+            
+            
+            discounted_return = delta + self.gamma * self.gae_param * discounted_return
+            advantages.append(discounted_return)
+        
+        raw_gae_advantages = torch.stack(advantages[::-1])
+
+                
+        advantages_std, advantages_mean = torch.std_mean(raw_gae_advantages)
+
+        gae_advantages_norm = (raw_gae_advantages - advantages_mean)/(advantages_std + 1e-8)
+
+        return raw_gae_advantages, gae_advantages_norm
 
     def update(self, buffer: buffer.rollout_buffer):
 
         # 1. Precalculate targets and advantages once
-        returns = torch.tensor(self.compute_returns(buffer), dtype=torch.float32).to(self.device)
-        advantages = self.compute_advantage(buffer).detach()
+        raw_advantages, advantages = self.compute_advantage_gae(buffer)
+        advantages = advantages.detach()
 
         old_states = torch.cat(buffer.states).to(self.device)
         old_actions = torch.tensor(buffer.actions, dtype=torch.long).to(self.device)
         old_log_probs = torch.cat(buffer.log_probs).detach().to(self.device).squeeze(-1)
+        
+        values = torch.stack(buffer.state_values).to(self.device).detach()
+        returns = (raw_advantages + values).detach()
+        
         for epoch in range(self.k_epochs):
             
             log_probs, dist_entropy = self.actor.get_probs(old_states, old_actions)

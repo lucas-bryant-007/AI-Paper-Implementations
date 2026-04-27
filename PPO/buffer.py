@@ -8,6 +8,7 @@ class rollout_buffer():
         self.log_probs = []
         self.rewards = []
         self.state_values = []
+        self.next_state_values = []
         self.dones = []
 
     def clear(self):
@@ -16,4 +17,5 @@ class rollout_buffer():
         self.log_probs = []
         self.rewards = []
         self.state_values = []
+        self.next_state_values = []
         self.dones = []
