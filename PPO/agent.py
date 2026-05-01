@@ -82,16 +82,22 @@ class PPOAgent:
  
             next_state, reward, terminated, truncated, _ = self.env.step(env_action)
             done = terminated or truncated
- 
+            
+            with torch.no_grad():
+                next_state_val = self.critic(torch.as_tensor(next_state, dtype=torch.float32, device=self.device).unsqueeze(0))
+
+
             buffer.add(
                 state=state_t.cpu(),
                 action=stored_action,
                 log_prob=log_prob.cpu().squeeze(),
                 reward=float(reward),
                 value=value.cpu().squeeze(),
+                next_value=next_state_val.cpu().squeeze(),
                 done=done,
+                terminated=terminated,
             )
- 
+
             ep_return += reward
             if done:
                 episode_returns.append(ep_return)
@@ -100,10 +106,6 @@ class PPOAgent:
             else:
                 state = next_state
  
-        # Bootstrap value at the end of the rollout (only this once per rollout).
-        with torch.no_grad():
-            last_t = torch.as_tensor(state, dtype=torch.float32, device=self.device)
-            buffer.last_value = float(self.critic(last_t.unsqueeze(0)).item())
         return episode_returns
  
     # --- Advantage estimation ------------------------------------------------
@@ -113,11 +115,13 @@ class PPOAgent:
         rewards = torch.tensor(buffer.rewards, dtype=torch.float32)
         values = torch.stack(buffer.values).float()
         dones = torch.tensor(buffer.dones, dtype=torch.float32)
+        terminates = torch.tensor(buffer.terminates, dtype=torch.float32)
+
         masks = 1.0 - dones  # 0 wherever an episode ended at step t
+        masks_t = 1.0 - terminates
  
-        # next_values[t] = V(s_{t+1}); the last next-value is the bootstrap.
-        next_values = torch.cat([values[1:], torch.tensor([buffer.last_value])])
-        deltas = rewards + self.cfg.gamma * next_values * masks - values
+        next_values = torch.stack(buffer.next_values).float()
+        deltas = rewards + self.cfg.gamma * next_values * masks_t - values
  
         advantages = torch.zeros_like(rewards)
         gae = 0.0
