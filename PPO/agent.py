@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import List, Tuple
  
 import gymnasium as gym
+from gymnasium.spaces import Box, Discrete
+import numpy as np
 import torch
 import torch.nn.functional as F
  
@@ -29,15 +31,43 @@ class PPOAgent:
         self.optimizer = optimizer
         self.cfg = config
         self.device = device
+
+        self.is_discrete = isinstance(env.action_space, Discrete)
+        self.is_continuous = isinstance(env.action_space, Box)
+
+        if self.is_continuous:
+            self.action_low = torch.as_tensor(
+                env.action_space.low, dtype=torch.float32, device=device
+            )
+            self.action_high = torch.as_tensor(
+                env.action_space.high, dtype=torch.float32, device=device
+            )
  
     # --- Rollout collection --------------------------------------------------
  
     @torch.no_grad()
     def _step_policy(self, state_t: torch.Tensor) -> Tuple[int, torch.Tensor, torch.Tensor]:
         """Sample an action and compute its log-prob and value (no grad)."""
-        dist = self.actor(state_t)
-        action = dist.sample()
-        return action.item(), dist.log_prob(action), self.critic(state_t)
+        dist = self.actor(state_t) # gets distribution from our forward of our actor
+        raw_action = dist.sample() # sample action from our distribution
+        log_prob = dist.log_prob(raw_action) # gets prob of our raw action
+        value = self.critic(state_t) # gets critic value
+
+        if self.is_discrete:
+            env_action = int(raw_action.item())
+            stored_action = raw_action.squeeze(0).cpu()
+        
+        elif self.is_continuous:
+            stored_action = raw_action.squeeze(0).cpu()
+            clipped_action = torch.clamp(
+                raw_action.squeeze(0),
+                self.action_low,
+                self.action_high
+            )
+            env_action = clipped_action.cpu().numpy()
+        
+        return env_action, stored_action, log_prob, value
+        
  
     def collect_rollout(self, buffer: RolloutBuffer) -> List[float]:
         """Roll out `cfg.rollout_length` steps. Returns finished-episode returns."""
@@ -48,14 +78,14 @@ class PPOAgent:
         state, _ = self.env.reset()
         for _ in range(self.cfg.rollout_length):
             state_t = torch.as_tensor(state, dtype=torch.float32, device=self.device)
-            action, log_prob, value = self._step_policy(state_t.unsqueeze(0))
+            env_action, stored_action, log_prob, value = self._step_policy(state_t.unsqueeze(0))
  
-            next_state, reward, terminated, truncated, _ = self.env.step(action)
+            next_state, reward, terminated, truncated, _ = self.env.step(env_action)
             done = terminated or truncated
  
             buffer.add(
                 state=state_t.cpu(),
-                action=action,
+                action=stored_action,
                 log_prob=log_prob.cpu().squeeze(),
                 reward=float(reward),
                 value=value.cpu().squeeze(),
@@ -105,7 +135,12 @@ class PPOAgent:
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
  
         states = torch.stack(buffer.states).to(self.device)
-        actions = torch.tensor(buffer.actions, dtype=torch.long, device=self.device)
+
+        if self.is_discrete:
+            actions = torch.stack(buffer.actions).long().to(self.device)
+        elif self.is_continuous:
+            actions = torch.stack(buffer.actions).float().to(self.device)
+
         old_log_probs = torch.stack(buffer.log_probs).to(self.device)
  
         params = list(self.actor.parameters()) + list(self.critic.parameters())
@@ -138,7 +173,16 @@ class PPOAgent:
     def act(self, state) -> int:
         """Sample one action from the current policy (used at eval time)."""
         state_t = torch.as_tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
-        return int(self.actor(state_t).sample().item())
+        
+        action = self.actor(state_t).sample()
+
+        if self.is_discrete:
+            return int(action.item())
+        elif self.is_continuous:
+            action = action.squeeze(0)
+            action = torch.clamp(action, self.action_low, self.action_high)
+            return action.cpu().numpy()
+        
  
     # --- Persistence ---------------------------------------------------------
  

@@ -21,8 +21,8 @@ def _pick_device() -> torch.device:
 
 def _build_agent(env: gym.Env, cfg: PPOConfig, device: torch.device) -> PPOAgent:
     """Construct actor, critic, optimizer, and agent. Shared by train and eval."""
-    actor = Actor(env).to(device)
-    critic = Critic(env).to(device)
+    actor = Actor(env, hidden=256).to(device)
+    critic = Critic(env, hidden=256).to(device)
     optimizer = torch.optim.Adam(
         list(actor.parameters()) + list(critic.parameters()), lr=cfg.lr
     )

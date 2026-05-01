@@ -7,12 +7,12 @@ from pathlib import Path
 @dataclass
 class PPOConfig:
     # env
-    env_id: str = "CartPole-v1"
+    env_id: str = "BipedalWalker-v3"
 
     # training
-    num_iterations: int = 40
-    rollout_length: int = 2048
-    k_epochs: int = 10
+    num_iterations: int = 500
+    rollout_length: int = 8192
+    k_epochs: int = 5
 
     # ppo hyperparams
     gamma: float = 0.99
@@ -30,4 +30,4 @@ class PPOConfig:
     log_path: Path = Path("logs/training.csv")
 
     # evaluation
-    num_eval_games = 10
+    num_eval_games = 20
