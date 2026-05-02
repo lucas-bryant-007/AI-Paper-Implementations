@@ -8,5 +8,17 @@ Implementations of AI Papers from scratch with the purpose of learning and under
 - Vectorized envs for faster training of algorithms
 
 
-##List of Gym Environments PPO Works For:
-- Acrobot-v1
+## List of Gym Environments PPO Works For:
+- ### Classic Control
+    - Acrobot
+    - CartPole
+    - MountainCarContinuous
+    - MountainCar
+    - Pendulum
+- ### Box2D
+    - BipedalWalker
+    - CarRacing (kinda, do longer test, maybe normalize?)
+    - LunarLander
+- ### Toy Text
+- ### MuJoCo
+

@@ -4,6 +4,7 @@
 import gymnasium as gym
 from gymnasium.spaces import Box, Discrete
 import math
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.distributions import Categorical, Normal, Independent
@@ -29,8 +30,9 @@ def _orthagonal_init(module, hidden_gain, output_gain):
 class Actor(nn.Module):
     def __init__(self, env: gym.Env, hidden=64):
         super().__init__()
-
-        obs_dim = env.observation_space.shape[0] # gets dimension of our observation
+        
+        obs_shape = env.observation_space.shape # get entire obs shape as tuple
+        obs_dim = int(np.prod(obs_shape)) # multiply tuple out to get total flattened obs size
 
         self.is_discrete = isinstance(env.action_space, Discrete) # tracks if our action space is discrete in gym
         self.is_continuous = isinstance(env.action_space, Box) # bool tracking if continuous action space
@@ -55,7 +57,8 @@ class Actor(nn.Module):
 
         
     
-    def forward(self, obs):  
+    def forward(self, obs): 
+        obs = obs.flatten(start_dim=1) # flattens observation
         if self.is_discrete:
             logits = self.net(obs)
             return Categorical(logits=logits)
@@ -64,12 +67,16 @@ class Actor(nn.Module):
             std = self.log_std.exp().expand_as(mean)
             return Independent(Normal(mean, std), 1)
             
-
 class Critic(nn.Module):
     def __init__(self, env, hidden=64):
         super().__init__()
-        self.net = _mlp(env.observation_space.shape[0], 1, hidden)
+        
+        obs_shape = env.observation_space.shape # get entire obs shape as tuple
+        obs_dim = int(np.prod(obs_shape)) # multiply tuple out to get total flattened obs size
+
+        self.net = _mlp(obs_dim, 1, hidden)
         _orthagonal_init(self.net, hidden_gain=math.sqrt(2), output_gain=1.00)
     
     def forward(self, obs):
+        obs = obs.flatten(start_dim=1) # flattens observation
         return self.net(obs).squeeze(-1)
