@@ -2,10 +2,11 @@
 # defines actor (policy) and critic (value function) neural networks using pytorch
 
 import gymnasium as gym
+from gymnasium.spaces import Box, Discrete
+import math
 import torch
 import torch.nn as nn
 from torch.distributions import Categorical, Normal, Independent
-from gymnasium.spaces import Box, Discrete
 
 def _mlp(in_dim, out_dim, hidden=64):
     return nn.Sequential(
@@ -14,11 +15,16 @@ def _mlp(in_dim, out_dim, hidden=64):
         nn.Linear(hidden, out_dim)
     )
 
-def _orthagonal_init(module, gain):
-    for layer in module.modules():
-        if isinstance(layer, nn.Linear):
-            nn.init.orthogonal_(layer.weight, gain=gain)
-            nn.init.zeros_(layer.bias)
+def _orthagonal_init(module, hidden_gain, output_gain):
+    linear_layers = [layer for layer in module.modules() if isinstance(layer, nn.Linear)] # Makes a list of all linear layers in the network
+    
+    for layer in linear_layers[:-1]: # for all but last layer in network
+        nn.init.orthogonal_(layer.weight, gain=hidden_gain)
+        nn.init.zeros_(layer.bias)
+    
+    output_layer = linear_layers[-1] # get LAST layer of network
+    nn.init.orthogonal_(output_layer.weight, gain=output_gain) # give only last layer the output gain
+    nn.init.zeros_(output_layer.bias)
 
 class Actor(nn.Module):
     def __init__(self, env: gym.Env, hidden=64):
@@ -33,13 +39,14 @@ class Actor(nn.Module):
             # Do Discrete
             action_n = env.action_space.n
             self.net = _mlp(obs_dim, action_n, hidden)
-            _orthagonal_init(self.net, gain=0.01)
+            _orthagonal_init(self.net, hidden_gain=math.sqrt(2), output_gain=0.01)
         elif self.is_continuous:
             # Do Continuous
             action_dim = env.action_space.shape[0]
             self.net = _mlp(obs_dim, action_dim, hidden)
             self.log_std = nn.Parameter(torch.zeros(action_dim))
-            _orthagonal_init(self.net, gain=0.01)
+            _orthagonal_init(self.net, hidden_gain=math.sqrt(2), output_gain=0.01)
+
         else:
             raise NotImplementedError(
                 f"Unsupported action space: {type(env.action_space)}"
@@ -62,7 +69,7 @@ class Critic(nn.Module):
     def __init__(self, env, hidden=64):
         super().__init__()
         self.net = _mlp(env.observation_space.shape[0], 1, hidden)
-        _orthagonal_init(self.net, gain=1.0)
+        _orthagonal_init(self.net, hidden_gain=math.sqrt(2), output_gain=1.00)
     
     def forward(self, obs):
         return self.net(obs).squeeze(-1)

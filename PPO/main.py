@@ -21,8 +21,8 @@ def _pick_device() -> torch.device:
 
 def _build_agent(env: gym.Env, cfg: PPOConfig, device: torch.device) -> PPOAgent:
     """Construct actor, critic, optimizer, and agent. Shared by train and eval."""
-    actor = Actor(env, hidden=256).to(device)
-    critic = Critic(env, hidden=256).to(device)
+    actor = Actor(env, hidden=64).to(device)
+    critic = Critic(env, hidden=64).to(device)
     optimizer = torch.optim.Adam(
         list(actor.parameters()) + list(critic.parameters()), lr=cfg.lr
     )
@@ -65,7 +65,7 @@ def train(cfg: PPOConfig, run_name: str = "vanilla_ppo") -> List[Dict]:
             "lr": cfg.lr,
         })
 
-        if it % 10 == 0 or it == cfg.num_iterations - 1:
+        if it % 2 == 0 or it == cfg.num_iterations - 1:
             print(
                 f"[train] iter {it:3d} | "
                 f"avg_return {avg_return:7.2f} | "

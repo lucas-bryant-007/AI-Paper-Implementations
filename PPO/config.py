@@ -10,9 +10,9 @@ class PPOConfig:
     env_id: str = "BipedalWalker-v3"
 
     # training
-    num_iterations: int = 500
-    rollout_length: int = 8192
-    k_epochs: int = 5
+    num_iterations: int = 20
+    rollout_length: int = 2048
+    k_epochs: int = 10
 
     # ppo hyperparams
     gamma: float = 0.99
