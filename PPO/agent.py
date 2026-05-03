@@ -148,28 +148,44 @@ class PPOAgent:
         old_log_probs = torch.stack(buffer.log_probs).to(self.device)
  
         params = list(self.actor.parameters()) + list(self.critic.parameters())
- 
+
+        batch_size = len(buffer)
+        minibatch_size = self.cfg.minibatch_size
+
         for _ in range(self.cfg.k_epochs):
-            dist = self.actor(states)
-            new_log_probs = dist.log_prob(actions)
-            entropy = dist.entropy().mean()
- 
-            ratio = torch.exp(new_log_probs - old_log_probs)
-            surr1 = ratio * advantages
-            surr2 = torch.clamp(ratio, 1 - self.cfg.clip_eps, 1 + self.cfg.clip_eps) * advantages
-            policy_loss = -torch.min(surr1, surr2).mean()
-            value_loss = F.mse_loss(self.critic(states), returns)
- 
-            loss = (
-                policy_loss
-                + self.cfg.value_coef * value_loss
-                - self.cfg.entropy_coef * entropy
-            )
- 
-            self.optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(params, self.cfg.max_grad_norm)
-            self.optimizer.step()
+            indices = torch.randperm(batch_size, device=self.device) # shuffle our indices for minibatch sampling, so better learning signal than local extrema that consecutive states can sometimes provide
+
+            for start in range(0, batch_size, minibatch_size):
+                end = start+minibatch_size
+                mb_idx = indices[start:end]
+
+                mb_states = states[mb_idx]
+                mb_actions = actions[mb_idx]
+                mb_old_log_probs = old_log_probs[mb_idx] # get log probs at minibatch indices, not recomputed because we already computed log_probs
+                mb_advantages = advantages[mb_idx] # fine to shuffle advantage, update signal only relies on advantages, not consecutiveness
+                mb_returns = returns[mb_idx]
+
+                dist = self.actor(mb_states)
+                new_log_probs = dist.log_prob(mb_actions)
+                entropy = dist.entropy().mean()
+
+                ratio = torch.exp(new_log_probs - mb_old_log_probs) # prob of action under new policy divided by prob under old policy
+
+                surr1 = ratio * mb_advantages
+                surr2 = torch.clamp(ratio, 1 - self.cfg.clip_eps, 1 + self.cfg.clip_eps) * mb_advantages
+                policy_loss = -torch.min(surr1, surr2).mean()
+                value_loss = F.mse_loss(self.critic(mb_states), mb_returns)
+
+                loss = (
+                    policy_loss
+                    + self.cfg.value_coef * value_loss
+                    - self.cfg.entropy_coef * entropy
+                )
+
+                self.optimizer.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(params, self.cfg.max_grad_norm)
+                self.optimizer.step()
  
     # --- Inference -----------------------------------------------------------
  

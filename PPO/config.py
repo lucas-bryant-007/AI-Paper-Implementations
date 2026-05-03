@@ -13,6 +13,7 @@ class PPOConfig:
     num_iterations: int = 20
     rollout_length: int = 2048
     k_epochs: int = 10
+    minibatch_size: int = 64
 
     # ppo hyperparams
     gamma: float = 0.99

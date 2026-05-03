@@ -7,6 +7,7 @@ import csv
 from typing import Dict, List
 
 import gymnasium as gym
+from gymnasium.wrappers import FlattenObservation
 import torch
 
 from agent import PPOAgent
@@ -44,7 +45,7 @@ def train(cfg: PPOConfig, run_name: str = "vanilla_ppo") -> List[Dict]:
     device = _pick_device()
     print(f"[train] env={cfg.env_id}  device={device}  iters={cfg.num_iterations}  lr={cfg.lr}")
 
-    env = gym.make(cfg.env_id)
+    env = FlattenObservation(gym.make(cfg.env_id))
     agent = _build_agent(env, cfg, device)
     buffer = RolloutBuffer()
 
@@ -76,13 +77,13 @@ def train(cfg: PPOConfig, run_name: str = "vanilla_ppo") -> List[Dict]:
     print(f"[train] saved checkpoint to {cfg.save_dir}")
     _write_log(log, cfg)
 
-    env.close()
+    env.close() 
     return log
 
 
 def evaluate(cfg: PPOConfig, render: bool = True) -> None:
     device = _pick_device()
-    env = gym.make(cfg.env_id, render_mode="human" if render else None)
+    env = FlattenObservation(gym.make(cfg.env_id, render_mode="human" if render else None))
     agent = _build_agent(env, cfg, device)
     agent.load(cfg.save_dir)
     print(f"[eval] loaded checkpoint from {cfg.save_dir}")
